@@ -18,15 +18,10 @@ rank_headers_cookie = r''
 pic_info_headers_cookie = r''
 
 # 图片下载位置全路径（作为脚本运行时）
-download_path = r''
+download_path_global = r''
 
 # 可选图片尺寸列表
 pic_size_list = ['mini', 'thumb', 'small', 'regular', 'original']
-
-# 榜单数据返回形式
-"{'rank': self.rank_num, 'title': self.title_list, 'artist': self.artist_list, 'id': self.pic_id_list}"
-
-# pic_tag_dict构造 {illuist_id:{"jp_tag":'ツムギ(プリコネ)', "cn_tag":'纺希（公主连结）'.......}.......}
 
 
 class Pixiv:
@@ -41,18 +36,16 @@ class Pixiv:
     def __init__(self):
         self.state = 200
         self.agency = agency  # 代理地址
-        self.r18 = False  # 初始化r18设定，可在其余方法中再次关启r18
         self.enable_cache = True  # 是否启用缓存功能
         self.cache_time_gap = 21600  # 缓存刷新间隔(秒)
         self.pic_size_list = ['mini', 'thumb', 'small', 'regular', 'original']
 
-        self.is_that_gif = {}  # 感觉更容易混乱了。
-
+        self.r18 = False
         self.module_path = os.path.dirname(__file__)  # 文件缓存目录
         self.page_1 = ''
         self.page_2 = ''
 
-        self.pixiv = httpx.AsyncClient(http2=True, verify=False, proxies=self.agency)  # http2模式 代理
+        self.pixiv = httpx.AsyncClient(http2=True, verify=False, proxies=self.agency)  # 异步客户端 http2模式 代理
 
         self.rank_headers = {
             'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -85,20 +78,15 @@ class Pixiv:
         self.artist_list = []
         self.pic_id_list = []
 
-        self.pic_url_dict = {}  # {illuist_id:{'mini':url, 'thumb':url, 'small':url, 'regular':url, 'original':url}}
-
-        self.pic_tag_dict = {}  # 层构造 {illuist_id:{"jp_tag":'ツムギ(プリコネ)', "cn_tag":'纺希（公主连结）'.......}.......}
-        self.arranged_rank = []
-
-    async def get_daily_rank(self, r18=False):
+    async def daily_rank(self, r18=False):
         """
-        get_daily_rank获取Pixiv榜单信息
-        :param r18: bool型 控制榜单类型是否为r18
-        :return 详见脚本文件开头
+        daily_rank Pixiv每日榜单
+        :param r18: r18榜单
+        :return rank_id_list: 每日榜单前100 图片illuist id 列表（按排名顺序）
         """
         self.r18 = r18
-        self.page_1 = f"{self.module_path}/rank_page_1_{'r18' if self.r18 else 'regular'}.html"  # 缓存榜单文件路径，区分是否为r18
-        self.page_2 = f"{self.module_path}/rank_page_2_{'r18' if self.r18 else 'regular'}.json"
+        self.page_1 = f"{self.module_path}/rank_page_1_{'r18' if r18 else 'regular'}.html"  # 缓存榜单文件路径，区分是否为r18
+        self.page_2 = f"{self.module_path}/rank_page_2_{'r18' if r18 else 'regular'}.json"
         if self.enable_cache and self._rank_cache_check():  # 检查是否启用缓存功能及榜单缓存文件
             content_1, content_2 = self._rank_cache_read()
             return self._rank_parser(content_1, content_2)
@@ -118,147 +106,37 @@ class Pixiv:
             self._rank_cache_write(content_1, content_2)
         return self._rank_parser(content_1, content_2)
 
-    async def get_daily_rank_url(self, pic_id_range_start=0, pic_id_range_end=10):
+    async def illustration_detail_parser(self, pic_id_list: list):
         """
-        get_daily_rank_url 获取榜单相应起始范围图片url，并解析tag
-        非榜单图片获取url及tag请使用pic_search
-        :param illuist_id: 图片id
-        :param pic_id_range_start: 图片排行起始位置 0-99
-        :param pic_id_range_end: 图片排行结束位置 1-100
-        :return url_dict: 图片信息页中不同尺寸url
-        返回样式: {illuist_id:{'mini':url, 'thumb':url, 'small':url, 'regular':url, 'original':url}}
+        illustration_detail_parser Pixiv插图详情
+        :param pic_id_list: 需要解析的illuist id 列表
+        :return: 图片详情 {pic_id: {'title': '', 'artist': '', 'tag': {}, 'url': {'mini': '', 'thumb': '', 'small': '',
+         'regular': '', 'original': ''}, 'r18': False, 'gif': False}}
         """
-        if self.pic_id_list:
-            pic_id_list = self.pic_id_list[pic_id_range_start:pic_id_range_end]
-        else:
-            raise ValueError('get_daily_rank_url 请先获取榜单')
+        illustration_detail_dict = {}
+        task = [asyncio.create_task(self._illustration_detail_parser(pic_id)) for pic_id in pic_id_list]
+        illustration_detail_list = await asyncio.gather(*task)
+        for i in illustration_detail_list:
+            illustration_detail_dict.update(i)
+        return illustration_detail_dict
 
-        get_rank_url_task = []
-        for pic_id in pic_id_list:
-            get_rank_url_task.append(asyncio.create_task(self._get_url(pic_id)))
-        url_list = await asyncio.gather(*get_rank_url_task)
-        pic_url_dict = dict(zip(pic_id_list, url_list))
-        self.pic_url_dict.update(pic_url_dict)
-        return pic_url_dict
-
-    async def pic_download(self, download_path: str, pic_url=None, pic_size='regular'):
+    async def illustration_downloader(self, download_path: str, illustration_detail: dict, pic_size='regular'):
         """
-        pic_download 下载图片
-        优先下载参数pic_url图片，如无则尝试从已获取的url下载
+        illustration_downloader Pixiv插图下载
         :param download_path: 下载位置全路径
-        :param pic_size: 下载图片尺寸
-        :param pic_url: 图片url
-        :return: pic_file_full_path: 下载完成图片全路径列表
-        返回样式: ['C:\\Users\\MSI-PC\\Desktop\\bmss/90112021.jpg',......]
+        :param illustration_detail: illustration_detail_parser获取的插图详情
+        :param pic_size: 需下载图片尺寸
+        :return: 下载完成图片全路径
         """
-        if pic_url:
-            pic_url_list = list(pic_url)
-        elif not self.pic_url_dict:
-            raise ValueError('get_pic 未输入图片url或榜单图片url未经get_url获取')
-        else:
-            pic_url_list = [url[pic_size] for url in self.pic_url_dict.values()]
-        get_rank_pic_task = []
-        for url in pic_url_list:
-            get_rank_pic_task.append(asyncio.create_task(self._get_pic(download_path, url)))
-        pic_file_full_path = await asyncio.gather(*get_rank_pic_task)
+        task = []
+        for key in illustration_detail.keys():
+            url = illustration_detail[key]['url'][pic_size]
+            if illustration_detail[key]['gif'] is False:
+                task.append(asyncio.create_task(self._pic_downloader(download_path, url)))
+            elif illustration_detail[key]['gif'] is True:
+                task.append(asyncio.create_task(self.gif_downloader(download_path, url)))
+        pic_file_full_path = await asyncio.gather(*task)
         return pic_file_full_path
-
-    async def pic_search(self, pic_id: str, max_attempt=2) -> dict:
-        """
-        pic_search Pixiv图片搜索
-        :param pic_id: illuist id Pixiv图片id
-        :param max_attempt: 最大重试次数
-        :return: {'title': title, 'artist': artist, 'url': urls_json_form, 'tag': self.pic_tag_dict[pic_id]}
-        """
-        print(f'Pixiv搜索, id={pic_id}')
-        pic_html = None
-        attempt_num = 0
-        while attempt_num < max_attempt:
-            try:
-                pic_html = await self.pixiv.get(f'https://www.pixiv.net/artworks/{pic_id}', headers=self.url_headers, timeout=8)
-                break
-            except Exception as e:
-                print(f'{pic_id} 图片url获取失败', attempt_num)
-                attempt_num += 1
-        if pic_html.status_code == 404:
-            self.state = f'404 {pic_id}图片不存在'
-            print(self.state)
-            return {}
-        else:
-            content = pic_html.content.decode('utf-8')
-            soup = BeautifulSoup(content, 'html.parser', from_encoding='utf-8')
-            preload_content = soup.find_all('meta', id='meta-preload-data')[0]['content']
-            urls_json_form = json.loads('{' + re.findall(r'"urls":\{(.*?)\},', preload_content)[0] + '}')
-            title = re.findall(r'"illustTitle":"(.*?)",', preload_content)[0]
-            artist = re.findall(r'"userName":"(.*?)"\}', preload_content)[0]
-
-            if re.findall('动图', soup.title.string):
-                self.is_that_gif.update({pic_id: True})
-                print('该图片为gif图，请使用gif_download来下载')
-            self._tag_parser(content)
-            return {'title': title, 'artist': artist, 'url': urls_json_form, 'tag': self.pic_tag_dict[pic_id]}
-
-    async def gif_download(self, download_path: str, url_unhandled: str):
-        """
-        gif_download Pixiv动图下载，需要通过pic_search 先获得动图url
-        :param download_path: 下载位置全路径
-        :param url_unhandled: 未经解析的图片url
-        :return gif_file: 动图gif全路径
-        """
-        print(f'Pixiv动图下载')
-        # 构造gif下载url
-        gif_host = 'https://i.pximg.net/img-zip-ugoira/img/'
-        gif_host_tail = '_ugoira600x600.zip'
-        gif_url = gif_host + re.findall(r'/img/(.*)_ugoira0.jpg', url_unhandled)[0] + gif_host_tail
-        print(gif_url)
-        # 准备临时文件路径
-        zip_file_name = re.findall(r'.*/(.*?\.zip)', gif_url)[0]
-        zip_file_path = f'{download_path}/{zip_file_name}'
-        foder_name = os.path.splitext(zip_file_name)[0]
-        foder_path = f'{download_path}/{foder_name}'
-        gif_file = f'{download_path}/{foder_name}.gif'
-        print(zip_file_name, foder_name, gif_file)
-        # 检查是否已存在gif
-        if os.path.isfile(gif_file):
-            print(f'{gif_file}已存在')
-            return gif_file
-        # 下载gif
-        gif_response = await self.pixiv.get(url=gif_url, headers=self.gif_download_headers, timeout=60)
-        print('gif完成下载，处理中')
-        with open(zip_file_path, 'wb') as f:
-            f.write(gif_response.content)
-        # 解压gif文件
-        zip_file = zipfile.ZipFile(zip_file_path)
-        os.mkdir(foder_path)
-        zip_file.extractall(foder_path)
-        zip_file.close()
-        os.remove(zip_file_path)
-        # 合成gif图片，并删除临时文件
-        pictures = os.listdir(foder_path)
-        gif_frame = []
-        for picture in pictures:
-            gif_frame.append(imageio.imread(f'{foder_path}/' + picture))
-            os.remove(f'{foder_path}/' + picture)
-        os.rmdir(foder_path)
-        imageio.mimsave(gif_file, gif_frame, duration=0.086)
-        return gif_file
-
-    def _rank_parser(self, response_1_content, response_2_content) -> dict:
-        rank_html_1 = BeautifulSoup(response_1_content, 'html.parser', from_encoding='utf-8')
-        rank_items_1 = rank_html_1.find_all(class_='ranking-item')
-        for rank_item in rank_items_1:
-            self.rank_num.append(rank_item['data-rank-text'].replace('#', ''))
-            self.title_list.append(rank_item['data-title'])
-            self.artist_list.append(rank_item['data-user-name'])
-            self.pic_id_list.append(rank_item['data-id'])
-        rank_html_2 = json.loads(response_2_content)
-        rank_items_2 = rank_html_2['contents']
-        for rank_item in rank_items_2:
-            self.rank_num.append(str(rank_item['rank']))
-            self.title_list.append(rank_item['title'])
-            self.artist_list.append(rank_item['user_name'])
-            self.pic_id_list.append(rank_item['illust_id'])
-        return {'rank': self.rank_num, 'title': self.title_list, 'artist': self.artist_list, 'id': self.pic_id_list}
 
     def _rank_cache_check(self) -> bool:
         print(f"Pixiv 获取{'r18' if self.r18 else '常规'}榜单 {f'启用{self.cache_time_gap}秒' if self.enable_cache else '未启用'}缓存")
@@ -291,8 +169,25 @@ class Pixiv:
         file_name = file_name.split('_')[0] + '.' + file_name.split('.')[-1]  # 仔细想了下，还是改回简单的id号文件名
         return file_name
 
-    async def _get_url(self, pic_id: str, max_attempt=2):
-        await asyncio.sleep(random.randint(0, 10)/10)  # 暂停一下随机时间
+    def _rank_parser(self, response_1_content, response_2_content):
+        rank_html_1 = BeautifulSoup(response_1_content, 'html.parser', from_encoding='utf-8')
+        rank_items_1 = rank_html_1.find_all(class_='ranking-item')
+        for rank_item in rank_items_1:
+            self.rank_num.append(rank_item['data-rank-text'].replace('#', ''))
+            self.title_list.append(rank_item['data-title'])
+            self.artist_list.append(rank_item['data-user-name'])
+            self.pic_id_list.append(rank_item['data-id'])
+        rank_html_2 = json.loads(response_2_content)
+        rank_items_2 = rank_html_2['contents']
+        for rank_item in rank_items_2:
+            self.rank_num.append(str(rank_item['rank']))
+            self.title_list.append(rank_item['title'])
+            self.artist_list.append(rank_item['user_name'])
+            self.pic_id_list.append(rank_item['illust_id'])
+        return self.pic_id_list
+
+    async def _illustration_detail_parser(self, pic_id: str, max_attempt=2):
+        print(f'图片解析{pic_id}')
         pic_html = None
         attempt_num = 0
         while attempt_num < max_attempt:
@@ -300,58 +195,95 @@ class Pixiv:
                 pic_html = await self.pixiv.get(f'https://www.pixiv.net/artworks/{pic_id}', headers=self.url_headers, timeout=8)
                 break
             except Exception as e:
-                print(f'{pic_id} 图片url获取失败', attempt_num)
+                print(f'图片解析{pic_id} 失败', attempt_num)
                 attempt_num += 1
-        if pic_html and pic_html.status_code != 404:
+
+        if (pic_html is None) or (pic_html.status_code == 404):
+            return {pic_id: {'title': '', 'artist': '', 'tag': {}, 'url': {'mini': '', 'thumb': '', 'small': '', 'regular': '', 'original': ''}, 'r18': False, 'gif': False}}
+        elif pic_html.status_code != 404:
             content = pic_html.content.decode('utf-8')
             soup = BeautifulSoup(content, 'html.parser', from_encoding='utf-8')
             preload_content = soup.find_all('meta', id='meta-preload-data')[0]['content']
-            urls_json_form = json.loads('{' + re.findall(r'"urls":\{(.*?)\},', preload_content)[0] + '}')
-            print(f'获取url，id={pic_id}')
-            self._tag_parser(content)
-            return urls_json_form
-        elif pic_html.status_code == 404:
-            self.state = f'404 {pic_id}图片不存在'
-            print(self.state)
-            return False
-        else:
-            return False
 
-    async def _get_pic(self, download_path: str, pic_url: str, max_attempt=2):
+            title = re.findall(r'"illustTitle":"(.*?)",', preload_content)[0]  # 标题
+            artist = re.findall(r'"userName":"(.*?)"\}', preload_content)[0]  # 作者
+            urls_json_form = json.loads('{' + re.findall(r'"urls":\{(.*?)\},', preload_content)[0] + '}')  # url字典
+            tags_json_form = json.loads('{' + re.findall(r'"tags":\[.*?\]', preload_content)[0] + '}')  # tag标签字典
+            tag_dict = {}
+            for tag in tags_json_form['tags']:
+                jp_tag = tag['tag']
+                cn_tag = tag['translation']['en'] if "translation" in tag else ''
+                tag_dict.update({jp_tag: cn_tag})
+            gif = bool(re.findall('动图', soup.title.string))  # 是否为gif图
+            r18 = bool('R-18' in tag_dict.keys())  # 是否为r18图
+            return {pic_id: {'title': title, 'artist': artist, 'tag': tag_dict, 'url': urls_json_form, 'r18': r18, 'gif': gif}}
+
+    async def _pic_downloader(self, download_path: str, pic_url: str, max_attempt=2) -> str:
+        if not pic_url:
+            return ''
         pic_file_name = self._image_url2name(pic_url)
         if os.path.isfile(f'{download_path}/{pic_file_name}') and (os.path.getsize(f'{download_path}/{pic_file_name}') >= 1000):
-            print(f'图片ID{pic_file_name}已存在')
+            print(f'图片{pic_file_name}已存在')
             return f'{download_path}/{pic_file_name}'
 
-        await asyncio.sleep(random.randint(0, 10) / 10)  # 暂停一下随机时间
         pic = None
         attempt_num = 0
         while attempt_num < max_attempt:
             try:
-                pic = await self.pixiv.get(pic_url, headers=self.download_headers, timeout=10)
+                pic = await self.pixiv.get(pic_url, headers=self.download_headers, timeout=15)
                 break
             except Exception as e:
-                print(f'{pic_file_name} 图片下载失败', attempt_num)
+                print(f'图片下载{pic_file_name} 失败', attempt_num)
                 attempt_num += 1
+        if pic is None:
+            return ''
+        else:
+            with open(f'{download_path}/{pic_file_name}', 'wb') as f:
+                f.write(pic.content)
+            print(f'图片下载{pic_file_name}完成')
+            return f'{download_path}/{pic_file_name}'
 
-        with open(f'{download_path}/{pic_file_name}', 'wb') as f:
-            f.write(pic.content)
-        print(f'图片ID{pic_file_name}下载完成')
-        return f'{download_path}/{pic_file_name}'
-
-    def _tag_parser(self, content):  # 不能外部调用。只能通过get_url 方法，并开启tag解析，访问pic_tag_dict
-        soup = BeautifulSoup(content, 'html.parser', from_encoding='utf-8')
-        preload_content = soup.find_all('meta', id='meta-preload-data')[0]['content']
-        illust_id = re.findall(r'"illust":\{"(.*?)"', preload_content)[0]
-        print(f'处理tag，id={illust_id}')
-        tags_json_form = json.loads('{' + re.findall(r'"tags":\[.*?\]', preload_content)[0] + '}')
-        tag_dict = {}
-        for tag in tags_json_form['tags']:
-            jp_tag = tag['tag']
-            cn_tag = tag['translation']['en'] if "translation" in tag else ''
-            tag_dict.update({jp_tag: cn_tag})
-        self.pic_tag_dict.update({illust_id: tag_dict})
-        return self.pic_tag_dict
+    async def gif_downloader(self, download_path: str, url_unhandled: str):
+        gif_address = re.findall(r'/img/(.*)_', url_unhandled)[0]
+        print(f"动图下载{gif_address}")
+        # 构造gif下载url
+        gif_host = 'https://i.pximg.net/img-zip-ugoira/img/'
+        gif_host_tail = '_ugoira600x600.zip'
+        gif_url = gif_host + re.findall(r'/img/(.*)_', url_unhandled)[0] + gif_host_tail
+        # 准备临时文件路径
+        zip_file_name = re.findall(r'.*/(.*?\.zip)', gif_url)[0]
+        zip_file_path = f'{download_path}/{zip_file_name}'
+        foder_name = os.path.splitext(zip_file_name)[0]
+        foder_path = f'{download_path}/{foder_name}'
+        gif_file = f'{download_path}/{foder_name}.gif'
+        # 检查是否已存在gif
+        if os.path.isfile(gif_file):
+            print(f'{gif_file}已存在')
+            return gif_file
+        # 下载gif
+        try:
+            gif_response = await self.pixiv.get(url=gif_url, headers=self.gif_download_headers, timeout=30)
+        except Exception as e:
+            print(f"动图下载{gif_address}失败")
+            return ''
+        print('下载完成，处理中')
+        with open(zip_file_path, 'wb') as f:
+            f.write(gif_response.content)
+        # 解压gif文件
+        zip_file = zipfile.ZipFile(zip_file_path)
+        os.mkdir(foder_path)
+        zip_file.extractall(foder_path)
+        zip_file.close()
+        os.remove(zip_file_path)
+        # 合成gif图片，并删除临时文件
+        pictures = os.listdir(foder_path)
+        gif_frame = []
+        for picture in pictures:
+            gif_frame.append(imageio.imread(f'{foder_path}/' + picture))
+            os.remove(f'{foder_path}/' + picture)
+        os.rmdir(foder_path)
+        imageio.mimsave(gif_file, gif_frame, duration=0.086)
+        return gif_file
 
 
 async def rank_test():
@@ -363,23 +295,24 @@ async def rank_test():
 
     # 获取p站榜单
     # r18关键词控制榜单类型
-    rank_dict = await p.get_daily_rank(r18=False)
-    print(rank_dict)
+    id_list = await p.daily_rank(r18=False)
+    print(id_list)
 
-    # 获取p站榜单图片url
-    # 通过pic_id_range_start, pic_id_range_end 限定范围（一次调用中建议范围小于20，防止被查）
-    # 这一步将包含tag标签解析
-    url_dict = await p.get_daily_rank_url(pic_id_range_start=10, pic_id_range_end=20)
-    print(url_dict)
+    # 获取p站榜单图片详情
+    # 通过列表切片 限定范围（一次调用中建议范围小于20，防止被查）
+    # {pic_id: {'title': '', 'artist': '', 'tag': {}, 'url': {'mini': '', 'thumb': '', 'small': '', 'regular': '',
+    # 'original': ''}, 'r18': False, 'gif': False}} 返回格式
+    illuist_detail_dict = await p.illustration_detail_parser(id_list[20:30])
+    print(illuist_detail_dict)
 
     # 榜单图片tag标签获取方式
     # 必须在get_daily_rank_url、pic_search方法之后
-    print('tag示例:', p.pic_tag_dict[rank_dict['id'][10]])
+    # print('tag示例:', p.pic_tag_dict[rank_dict['id'][10]])
 
     # 榜单图片下载
-    # 未输入pic_url列表或字符串，则默认下载经get_daily_rank_url方法获得url的图片。
-    # 可设置pic_size 下载图片规格
-    download_report = await p.pic_download(pic_url=None, download_path=download_path, pic_size='regular')
+    # illustration_detail直接传入上一步的返回
+    # 可设置pic_size 图片规格尺寸
+    download_report = await p.illustration_downloader(download_path=download_path_global, illustration_detail=illuist_detail_dict, pic_size='regular')
     print(download_report)
 
     # 手动关闭httpx异步客户端，不介意报错也可以不管= =
@@ -392,20 +325,22 @@ async def search_test():
     """
     # 实例化Pixiv
     p = Pixiv()
-    illuist_id = '91047813'
 
-    # 搜索独立图片时，使用pic_search
-    search_report = await p.pic_search(illuist_id)
+    # 字符串列表 形式图片id
+    illuist_id = ['91855805']
+
+    # 获取p站榜单图片详情
+    # 通过列表切片 限定范围（一次调用中建议范围小于20，防止被查）
+    # {pic_id: {'title': '', 'artist': '', 'tag': {}, 'url': {'mini': '', 'thumb': '', 'small': '', 'regular': '',
+    # 'original': ''}, 'r18': False, 'gif': False}} 返回格式
+    search_report = await p.illustration_detail_parser(illuist_id)
     print(search_report)
 
-    # 判断该图是否为gif图
-    if p.is_that_gif[illuist_id]:
-        # gif_download方法url_unhandled参数传入任意尺寸图片url皆可
-        download_report = await p.gif_download(download_path=download_path, url_unhandled=search_report['url']['original'])
-        print(download_report)
-    else:
-        download_report = await p.pic_download(download_path=download_path, pic_url=search_report['url']['original'])
-        print(download_report)
+    # 榜单图片下载
+    # illustration_detail直接传入上一步的返回
+    # 可设置pic_size 图片规格尺寸
+    download_report = await p.illustration_downloader(download_path=download_path_global, illustration_detail=search_report)
+    print(download_report)
 
     # 手动关闭httpx异步客户端，不介意报错也可以不管= =
     await p.pixiv.aclose()
@@ -413,6 +348,5 @@ async def search_test():
 
 if __name__ == '__main__':
     asyncio.run(rank_test())
-    await asyncio.sleep(5)
     asyncio.run(search_test())
 

@@ -29,7 +29,7 @@ Pixiv.py
 agency = ''  # 代理地址，国内访问一般需要
 rank_headers_cookie = ''  # Pixiv榜单cookie
 pic_info_headers_cookie = ''  # Pixiv图片详情页cookie
-download_path = ''  # 图片下载位置全路径（作为脚本运行时）
+download_path_global = ''  # 图片下载位置全路径（作为脚本运行时）
 ```
 
 
@@ -41,62 +41,79 @@ download_path = ''  # 图片下载位置全路径（作为脚本运行时）
 使用示例在Pixiv.py 脚本文件末尾
 
 ```python
-"""
-Pixiv榜单数据获取及图片下载示例
-"""
-# 获取榜单及图片时流程：1.实例化 2.获取榜单内容 3.获取榜单图片url 4.下载图片
-# 获取榜单将返回{'rank': self.rank_num, 'title': self.title_list, 'artist': self.artist_list, 'id': self.pic_id_list}排行榜图片排名、标题、作者、图片id
-# 由于图片tag无法在榜单中获取，图片包含的tag将在获取图片详情页的get_daily_rank_url、pic_search中解析，访问请通过类属性pic_tag_dict[illuist_id]来获得
+daily_rank返回示例
+['91882132', '91857578', '91856307', '91856552', '91865886']
 
-# 实例化Pixiv
-p = Pixiv()
+illustration_detail_parser返回示例
+{'91875603': {'title': 'THE STAR', 'artist': 'Coul', 'tag': {'fgo': '', 'Fate/GrandOrder': '', 'Fate': '', 'アルトリア・キャスター': '阿尔托莉雅·Caster', 'オベロン(Fate)': 'Oberon (Fate)', 'オベロン・ヴォーティガーン': '', 'タロットカード': 'tarot card', 'Fate/GO1000users入り': 'Fate/GO1000users加入书籤'}, 'url': {'mini': 'https://i.pximg.net/c/48x48/img-master/img/2021/08/10/20/56/01/91875603_p0_square1200.jpg', 'thumb': 'https://i.pximg.net/c/250x250_80_a2/img-master/img/2021/08/10/20/56/01/91875603_p0_square1200.jpg', 'small': 'https://i.pximg.net/c/540x540_70/img-master/img/2021/08/10/20/56/01/91875603_p0_master1200.jpg', 'regular': 'https://i.pximg.net/img-master/img/2021/08/10/20/56/01/91875603_p0_master1200.jpg', 'original': 'https://i.pximg.net/img-original/img/2021/08/10/20/56/01/91875603_p0.jpg'}, 'r18': False, 'gif': False}
 
-# 获取p站榜单
-# r18关键词控制榜单类型
-rank_dict = await p.get_daily_rank(r18=False)
+illustration_downloader返回示例
+['C:\\Users\\MSI-PC\\Desktop\\bmss/91875603.jpg]
 
-# 获取p站榜单图片url
-# 通过pic_id_range_start, pic_id_range_end 限定范围（一次调用中建议范围小于20，防止被查）
-# 这一步将包含tag标签解析，pic_tag_dict构造 {illuist_id:{"jp_tag":'ツムギ(プリコネ)', "cn_tag":'纺希（公主连结）'.......}.......}
+```
 
-url_dict = await p.get_daily_rank_url(pic_id_range_start=10, pic_id_range_end=20)
 
-# 榜单图片tag标签获取方式，10为图片榜单排名
-# 必须在get_daily_rank_url、pic_search方法之后
-print('tag示例:', p.pic_tag_dict[rank_dict['id'][10]])
 
-# 榜单图片下载
-# 未输入pic_url列表或字符串，则默认下载经get_daily_rank_url方法获得url的图片。
-# 可设置pic_size 下载图片规格
-download_report = await p.pic_download(pic_url=None, download_path=r'C:\Users\MSI-PC\Desktop\bmss', pic_size='regular')
+```python
+    """
+    Pixiv榜单数据获取及图片下载示例
+    """
+    # 实例化Pixiv
+    p = Pixiv()
 
-# 手动关闭httpx异步客户端，不介意报错也可以不管= =
-await p.pixiv.aclose()
+    # 获取p站榜单
+    # r18关键词控制榜单类型
+    id_list = await p.daily_rank(r18=False)
+    print(id_list)
+
+    # 获取p站榜单图片详情
+    # 通过列表切片 限定范围（一次调用中建议范围小于20，防止被查）
+    # {pic_id: {'title': '', 'artist': '', 'tag': {}, 'url': {'mini': '', 'thumb': '', 'small': '', 'regular': '',
+    # 'original': ''}, 'r18': False, 'gif': False}} 返回格式
+    illuist_detail_dict = await p.illustration_detail_parser(id_list[20:30])
+    print(illuist_detail_dict)
+
+    # 榜单图片tag标签获取方式
+    # 必须在get_daily_rank_url、pic_search方法之后
+    # print('tag示例:', p.pic_tag_dict[rank_dict['id'][10]])
+
+    # 榜单图片下载
+    # illustration_detail直接传入上一步的返回
+    # 可设置pic_size 图片规格尺寸
+    download_report = await p.illustration_downloader(download_path=download_path_global, illustration_detail=illuist_detail_dict, pic_size='regular')
+    print(download_report)
+
+    # 手动关闭httpx异步客户端，不介意报错也可以不管= =
+    await p.pixiv.aclose()
 ```
 
 ```python
-"""
-Pixiv单图搜索，及gif下载示例
-"""
-# 图片搜索流程 1.实例化 2.搜索图片(不存在则返回空字典) 3.通过is_that_gif属性判断该图片是否为gif图片(不通过gif_download下载则仅会下载gif第一帧) 4.下载图片
-# 实例化Pixiv
-p = Pixiv()
-illuist_id = '91047813'
+    """
+    Pixiv单图搜索，及gif下载示例
+    """
+    # 实例化Pixiv
+    p = Pixiv()
 
-# 搜索独立图片时，使用pic_search
-search_report = await p.pic_search(illuist_id)
+    # 字符串列表 形式图片id
+    illuist_id = ['91855805']
 
-# 判断该图是否为gif图
-if p.is_that_gif[illuist_id]:
-    # gif_download方法url_unhandled参数传入任意尺寸图片url皆可
-    download_report = await p.gif_download(download_path=r'C:\Users\MSI-PC\Desktop\bmss', url_unhandled=search_report['url']['original'])
-else:
-    download_report = await p.pic_download(download_path=r'C:\Users\MSI-PC\Desktop\bmss', pic_url=search_report['url']['original'])
+    # 获取p站榜单图片详情
+    # 通过列表切片 限定范围（一次调用中建议范围小于20，防止被查）
+    # {pic_id: {'title': '', 'artist': '', 'tag': {}, 'url': {'mini': '', 'thumb': '', 'small': '', 'regular': '', 'original': ''}, 'r18': False, 'gif': False}} 返回格式
+    search_report = await p.illustration_detail_parser(illuist_id)
+    print(search_report)
 
-# 手动关闭httpx异步客户端，不介意报错也可以不管= =
-await p.pixiv.aclose()
+    # 榜单图片下载
+    # illustration_detail直接传入上一步的返回
+    # 可设置pic_size 图片规格尺寸
+    download_report = await p.illustration_downloader(download_path=download_path_global,illustration_detail=search_report)
+    print(download_report)
+
+    # 手动关闭httpx异步客户端，不介意报错也可以不管= =
+    await p.pixiv.aclose()
+
 ```
 
-啊~~总之有点混乱，但是能用！
+总之能用！
 
-——2021.8.11
+——2021.8.12
