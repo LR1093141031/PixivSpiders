@@ -15,9 +15,11 @@
 
 未实现Pixiv模拟登陆，需要自行登陆Pixiv并复制登陆cookie到脚本中。
 
-需求cookie：1.P站每日榜单页面cookie
+需求cookie：
 
-​					 2.P站图片详情页面cookie
+1.P站每日榜单页面cookie
+
+2.P站图片详情页面cookie
 
 获取cookie方法：登陆Pixiv访问榜单及图片详情页、F12进入开发者模式、找到ranking.php-Headers-RequestHeaders-cookie，复制该cookie字符串到脚本中。
 
@@ -32,9 +34,7 @@ pic_info_headers_cookie = ''  # Pixiv图片详情页cookie
 download_path_global = ''  # 图片下载位置全路径（作为脚本运行时）
 ```
 
-
-
-![p站cookie获取](C:\Users\MSI-PC\Desktop\GitHub\PixivSpiders\p站cookie获取.jpg)
+<img src="https://github.com/LR1093141031/PixivSpiders/blob/master/p%E7%AB%99cookie%E8%8E%B7%E5%8F%96.jpg" />
 
 ### 使用
 
